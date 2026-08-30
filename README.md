@@ -4,13 +4,6 @@ This repository contains coursework projects, machine learning implementations, 
 
 The projects focus on practical applications of AI, data analytics, machine learning, visualization, and intelligent systems across different business and research domains.
 
-## Featured Project
-
-- **[AI Agent Safety Gateway](ai-agent-safety/README.md)** — a dependency-free
-  policy enforcement layer demonstrating least privilege, prompt-injection
-  screening, human approval, session budgets, and privacy-conscious audit logs
-  for tool-using agents.
-
 ## Repository Structure
 
 ```text
