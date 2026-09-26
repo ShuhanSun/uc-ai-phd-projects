@@ -1,0 +1,153 @@
+name: Credit Default Analysis
+
+on:
+  push:
+    branches:
+      - chatgpt-credit-default-analysis-20260926
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas scikit-learn matplotlib seaborn
+      - name: Run analysis
+        run: |
+          mkdir -p analysis_output
+          cat > /tmp/run_analysis.py <<'PY'
+          import json
+          import pandas as pd
+          import matplotlib.pyplot as plt
+          import seaborn as sns
+          from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+          from sklearn.preprocessing import StandardScaler
+          from sklearn.pipeline import Pipeline
+          from sklearn.linear_model import LogisticRegression
+          from sklearn.tree import DecisionTreeClassifier
+          from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_auc_score
+
+          URL = 'https://raw.githubusercontent.com/baopuzi/Credit_Default/master/UCI_Credit_Card.csv'
+          TARGET = 'default.payment.next.month'
+          RANDOM_STATE = 42
+
+          df = pd.read_csv(URL)
+          original_shape = list(df.shape)
+          missing_total = int(df.isna().sum().sum())
+          raw_duplicates = int(df.duplicated().sum())
+          target_counts = {str(int(k)): int(v) for k, v in df[TARGET].value_counts().sort_index().items()}
+          target_rates = {str(int(k)): float(v) for k, v in df[TARGET].value_counts(normalize=True).sort_index().items()}
+
+          # ID is only an identifier and is not used as a predictor.
+          X = df.drop(columns=['ID', TARGET])
+          y = df[TARGET]
+
+          X_train, X_test, y_train, y_test = train_test_split(
+              X, y, test_size=0.20, random_state=RANDOM_STATE, stratify=y
+          )
+
+          logistic = Pipeline([
+              ('scaler', StandardScaler()),
+              ('model', LogisticRegression(max_iter=2000, random_state=RANDOM_STATE))
+          ])
+          tree = DecisionTreeClassifier(max_depth=5, random_state=RANDOM_STATE)
+
+          models = {
+              'Logistic Regression': logistic,
+              'Decision Tree': tree,
+          }
+
+          metrics = {}
+          for name, model in models.items():
+              model.fit(X_train, y_train)
+              pred = model.predict(X_test)
+              prob = model.predict_proba(X_test)[:, 1]
+              cm = confusion_matrix(y_test, pred).tolist()
+              metrics[name] = {
+                  'accuracy': float(accuracy_score(y_test, pred)),
+                  'precision': float(precision_score(y_test, pred, zero_division=0)),
+                  'recall': float(recall_score(y_test, pred, zero_division=0)),
+                  'f1': float(f1_score(y_test, pred, zero_division=0)),
+                  'roc_auc': float(roc_auc_score(y_test, prob)),
+                  'confusion_matrix': cm,
+              }
+
+          # Simple 5-fold CV on the training set for a stability check.
+          cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+          cv_accuracy = {}
+          for name, model in models.items():
+              scores = cross_val_score(model, X_train, y_train, cv=cv, scoring='accuracy')
+              cv_accuracy[name] = {
+                  'mean': float(scores.mean()),
+                  'std': float(scores.std())
+              }
+
+          results = {
+              'dataset': {
+                  'shape': original_shape,
+                  'missing_values': missing_total,
+                  'raw_duplicate_rows': raw_duplicates,
+                  'target_counts': target_counts,
+                  'target_rates': target_rates,
+                  'feature_count_after_dropping_id': int(X.shape[1]),
+                  'train_size': int(len(X_train)),
+                  'test_size': int(len(X_test)),
+              },
+              'models': metrics,
+              'cross_validation_accuracy': cv_accuracy,
+          }
+
+          with open('analysis_output/results.json', 'w') as f:
+              json.dump(results, f, indent=2)
+
+          rows = []
+          for name, vals in metrics.items():
+              rows.append({'Model': name, **{k:v for k,v in vals.items() if k != 'confusion_matrix'}})
+          pd.DataFrame(rows).to_csv('analysis_output/model_metrics.csv', index=False)
+
+          sns.set_theme(style='whitegrid')
+
+          plt.figure(figsize=(6,4))
+          ax = sns.countplot(data=df, x=TARGET)
+          ax.set_title('Credit Card Default Distribution')
+          ax.set_xlabel('Default Next Month (0 = No, 1 = Yes)')
+          ax.set_ylabel('Number of Clients')
+          plt.tight_layout()
+          plt.savefig('analysis_output/class_distribution.png', dpi=180)
+          plt.close()
+
+          plt.figure(figsize=(6.5,4.2))
+          ax = sns.boxplot(data=df, x=TARGET, y='LIMIT_BAL', showfliers=False)
+          ax.set_title('Credit Limit by Default Status')
+          ax.set_xlabel('Default Next Month (0 = No, 1 = Yes)')
+          ax.set_ylabel('Credit Limit (NT dollars)')
+          plt.tight_layout()
+          plt.savefig('analysis_output/credit_limit_by_default.png', dpi=180)
+          plt.close()
+
+          plt.figure(figsize=(7,4.2))
+          pay0 = df.groupby('PAY_0')[TARGET].mean().reset_index()
+          ax = sns.barplot(data=pay0, x='PAY_0', y=TARGET)
+          ax.set_title('Default Rate by Most Recent Repayment Status (PAY_0)')
+          ax.set_xlabel('PAY_0 Repayment Status')
+          ax.set_ylabel('Observed Default Rate')
+          plt.tight_layout()
+          plt.savefig('analysis_output/default_rate_by_pay0.png', dpi=180)
+          plt.close()
+
+          print('=== RESULTS_JSON ===')
+          print(json.dumps(results, indent=2))
+          print('=== END_RESULTS_JSON ===')
+          PY
+          python /tmp/run_analysis.py
+      - name: Upload analysis outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: credit-default-analysis-results
+          path: analysis_output/
